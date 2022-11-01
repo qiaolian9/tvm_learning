@@ -1,5 +1,5 @@
 .ipynb_checkpoints/
-.results/
-.resource/
+results/
+resource/
 .nfs*
-.__pycache__
+.__pycache__/
