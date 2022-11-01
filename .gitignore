@@ -2,3 +2,4 @@
 .results/
 .resource/
 .nfs*
+.__pycache__
