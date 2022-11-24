@@ -87,7 +87,7 @@ def matmul(n, m, l):
     """
     A = te.placeholder((n, l), name='A', dtype='float32')
     B = te.placeholder((l, m), name='B', dtype='float32')
-    l = te.reduce_axis((0, l), name='k')
+    k = te.reduce_axis((0, l), name='k')
     C = te.compute((n, m), lambda i, j: te.sum(A[i, k] * B[k, j], axis=k), name='C')
     return A, B, C
 
@@ -291,3 +291,67 @@ def get_bn_data(c, n, constructor=None):
 
 def batch_norm_torch(data, mean, var, gamma, beta, eps=1e-5):
     return torch.nn.functional.batch_norm(data, mean, var, gamma, beta, eps=eps)
+
+# 4_2_FunctionCallOverhead
+def bench_workload(workload):
+    """ Benchmark a workload
+        workload: a method that accept a num_repeat argument
+        and return its total execution time
+    """
+    workload(1) #warmup
+    time = workload(1)
+    if time > 1 :
+        return time
+    num_repeats = max(int(1.0 / time), 5)
+    return workload(num_repeats) / num_repeats
+
+# 4_3_VectorAdd
+def plot(X, Y, xlabel=None, ylabel=None, legend=[], xlim=None, ylim=None, xscale='linear', yscale='linear', fmts=None, figsize=(4.5, 3)):
+    """Plot multiple lines"""
+    display.set_matplotlib_formats('svg')
+    plt.rcParams['figure.figsize'] = figsize
+    axes = plt.gca()
+    X, Y = np.array(X), np.array(Y)
+    if X.shape != Y.shape: X = [X] * len(Y)
+    if not fmts: fmts = ['-'] * len(X)
+    for x, y, fmt in zip(X, Y, fmts):
+        axes.plot(x, y, fmt)
+    axes.set_xlabel(xlabel)
+    axes.set_ylabel(ylabel)
+    axes.set_xscale(xscale)
+    axes.set_yscale(yscale)
+    axes.set_xlim(xlim)
+    axes.set_ylim(ylim)
+    if legend: axes.legend(legend)
+    axes.grid()
+
+def plot_gflops(sizes, gflops, legend, xlabel='size'):
+    plot(sizes, gflops, xlabel=xlabel, ylabel='GFLOPS',
+            xscale='log', yscale='log', legend=legend, fmts=['--']*(len(gflops)-1)+['-'])
+
+def bench_vector_add_tvm(func, sizes, target):
+    def workload(nrepeats):
+        timer = mod.time_evaluator(mod.entry_name, dev=ctx, number=nrepeats)
+        return timer(a, b, c).mean * nrepeats
+    times = []
+    for n in sizes:
+        s, (A, B, C) = func(int(n))
+        mod = tvm.build(s, [A, B, C], target)
+        ctx = tvm.device(target, 0)
+        a, b, c = get_abc(n, lambda x: tvm.nd.array(x, ctx=ctx))
+        times.append(bench_workload(workload))
+    return sizes / 1e9 / np.array(times)
+
+# 4_4_Broadcast_Add
+def bench_broad_add_tvm(func, sizes, target):
+    def workload(nrepeats):
+        timer = mod.time_evaluator(mod.entry_name, dev=ctx, number=nrepeats)
+        return timer(a, b, c).mean * nrepeats
+    times = []
+    for n in sizes:
+        s, (A, B, C) = func(n)
+        mod = tvm.build(s, [A, B, C], target)
+        ctx = tvm.device(target, 0)
+        a, b, c = get_broad_data((n, 1), (n, n), lambda x: tvm.nd.array(x, device=ctx))
+        times.append(bench_workload(workload))
+    return sizes * sizes / 1e9 / np.array(times)
