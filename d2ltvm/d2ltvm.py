@@ -355,3 +355,25 @@ def bench_broad_add_tvm(func, sizes, target):
         a, b, c = get_broad_data((n, 1), (n, n), lambda x: tvm.nd.array(x, device=ctx))
         times.append(bench_workload(workload))
     return sizes * sizes / 1e9 / np.array(times)
+
+# 4_5_MatrixMultiplication
+def np_matmul_timer(n):
+    timer = timeit.Timer(setup='import numpy as np\n'
+                'import d2ltvm\n'
+                'a, b, c = d2ltvm.get_abc(%s)' % str((n, n)),
+                stmt='np.dot(a, b, out=c)')
+    return timer.timeit
+
+def bench_matmul_tvm(func, sizes, target):
+    def workload(nrepeats):
+        timer = mod.time_evaluator(mod.entry_name, dev=ctx, number=nrepeats)
+        return timer(a, b, c).mean * nrepeats
+    times = []
+    for n in sizes:
+        s, (A, B, C) = func(n)
+        mod = tvm.build(s, [A, B, C], target)
+        ctx = tvm.device(target, 0)
+        a, b, c = get_abc((n, n), lambda x: tvm.nd.array(x, device=ctx))
+        times.append(bench_workload(workload))
+    
+    return 2 * sizes ** 3 / 1e9 / np.array(times)
