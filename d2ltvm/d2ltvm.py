@@ -128,7 +128,7 @@ def conv(oc, ic, nh, nw, kh, kw, ph=0, pw=0, sh=1, sw=1):
     ow = conv_out_size(nw, kw, pw, sw)
     
     X = te.placeholder((ic, nh, nw), name='X')
-    K = te.placeholder((oc, ic, nh, nw), name='K')
+    K = te.placeholder((oc, ic, kh, kw), name='K')
     
     PaddedX = padding(X, ph, pw) if ph * pw != 0 else X
     Y = te.compute((oc, oh, ow), 
@@ -377,3 +377,64 @@ def bench_matmul_tvm(func, sizes, target):
         times.append(bench_workload(workload))
     
     return 2 * sizes ** 3 / 1e9 / np.array(times)
+
+# 4_7_Convolution
+def conv_gflops(oc, ic, n, k, p, s):
+    """ Compute the #floating point operations in a convolution.
+        The arguments are output channels oc, input channels ic, input size n,
+        kernel size k, padding p and stride s.
+    """
+    on = conv_out_size(n, k, p, s)
+    return 2 * oc * ic * on * on * k ** 2 / 1e9
+
+
+def conv_timer_torch(c, n, k, ctx):
+    """ Benchmark convolution in MXNet
+        c : input, output channels
+        n : input width and height
+        k : kernel width and height
+    """
+    timer = timeit.Timer(setup='import d2ltvm\n'
+                        'import torch\n'
+                        'c, n, k, p, s = %d, %d, %d, %d, 1\n'
+                        'data, weight, bias = d2ltvm.get_conv_data_torch(c, c, n, k, p, s, ctx="%s")' % (c, n, k, (k-1) // 2, ctx),
+                        stmt='out = d2ltvm.conv_torch(data, weight, bias, p, s)')
+    return timer.timeit
+
+def bench_conv_torch(sizes, ctx='cpu'):
+    return [conv_gflops(c, c, n, k, (k-1) // 2, 1) / bench_workload(conv_timer_torch(c, n, k, ctx)) for c, n, k in sizes]
+
+def bench_conv_tvm(func, sizes, target):
+    def workload(nrepeats):
+        timer = mod.time_evaluator(mod.entry_name, dev=ctx, number=nrepeats)
+        return timer(x, k, y).mean * nrepeats
+    gflops, times = [], []
+    for (c, n, k) in sizes:
+        args = (c, c, n, k, (k-1) // 2, 1)
+        s, (X, K, Y) = func(*args)
+        mod = tvm.build(s, [X, K, Y], target)
+        ctx = tvm.device(target, 0)
+        x, k, y = get_conv_data(*args, lambda x: tvm.nd.array(x, device=ctx))
+        times.append(bench_workload(workload))
+        gflops.append(conv_gflops(*args))
+    return np.array(gflops) / np.array(times)
+
+# 4_8_PackedConvolution
+def conv_pack(oc, ic, nh, nw, kh, kw, ph, pw, toc, tic):
+    """ Pack data and weight for convolution
+        oc, ic : output and input channels
+        nh, nw : input width and height
+        kh, kw : kernel width and height
+        ph, pw : height and width padding
+        toc, tic : the tiling sizes of the output and input channels
+    """
+    X = te.placeholder(shape=(ic, nh, nw), name='X')
+    K = te.placeholder(shape=(oc, ic, kh, kw), name='K')
+    PaddedX = padding(X, ph, pw) if ph * pw != 0 else X
+    #Packed X
+    assert ic % tic == 0 and oc % toc == 0
+    PackedX = te.compute((ic // tic, nh, nw, tic), lambda ic_out, x, y, ic_in: PaddedX[ic_out * tic + ic_in, x, y], name='PackedX')
+    PackedK = te.compute((oc // toc, ic // tic, kh, kw, tic, toc), 
+                         lambda oc_out, ic_out, x, y, ic_in, oc_in: K[oc_out * toc + oc_in, ic_out * tic + ic_in, x, y], name='PackedK')
+    
+    return X, K, PaddedX, PackedX, PackedK
