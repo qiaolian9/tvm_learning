@@ -1,2 +1,1 @@
-# tvm_learning
-## from d2l-tvm
+from d2l-tvm
