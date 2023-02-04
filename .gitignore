@@ -3,4 +3,5 @@
 results/
 resource/
 .nfs*
+tutorial/
 __pycache__/
