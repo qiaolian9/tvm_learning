@@ -1,5 +1,5 @@
 # MLC learning
-## Tree:
+```
 .
 ├── d2ltvm_tutorial
 │   ├── ch1_getting_started
@@ -16,7 +16,7 @@
 │   ├── MLC#4
 │   └── README.md
 └──README.md
-
+```
 ## source
 d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm>
 mlc: <https://mlc.ai/zh/>
