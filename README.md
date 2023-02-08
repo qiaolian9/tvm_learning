@@ -18,5 +18,5 @@
 └──README.md
 ```
 ## source
-d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm>
+d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm> \
 mlc: <https://mlc.ai/zh/>
