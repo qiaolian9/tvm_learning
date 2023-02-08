@@ -5,3 +5,5 @@ resource/
 .nfs*
 tutorial/
 __pycache__/
+*.pkl
+data/
