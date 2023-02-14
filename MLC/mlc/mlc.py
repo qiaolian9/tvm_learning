@@ -11,55 +11,83 @@ from tvm.script import tir as T
 import torch.nn as nn
 import torch
 import sys
+import builtins
 mlc = sys.modules[__name__]
 
+# ---------------------- te ---------------------------------------#
+
+
 # ---------------------- 构造映射函数 ---------------------------------------#
-# torch graph --> IR high level relax.function
+# torch graph/nn.Module --> IR high level relax.function
 def map_params(param: nn.Parameter):
     return relax.const(param.data.cpu().numpy(), dtype='float32')
 
 def fetch_attr(fx_mod, target: str):
-    # 获得mod属性
+    # 获取mod属性
     target_atoms = target.split('.')
     attr_itr = fx_mod
     for i, atom in enumerate(target_atoms):
         if not hasattr(attr_itr, atom):
             raise RuntimeError(f"Node referenced nonexistant target {'.'.join(target_atoms[:i])}")
         attr_itr = getattr(attr_itr, atom)
-    
     return attr_itr
 
 # call_function
 def map_matmul(bb: relax.BlockBuilder, node_map, node):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     w = node_map[node.args[1]]
     return bb.emit(relax.op.matmul(x, w))
 
 def map_relu(bb: relax.BlockBuilder, node_map, node):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     return bb.emit(relax.op.nn.relu(x))
 
 def map_add(bb: relax.BlockBuilder, node_map, node):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     b = node_map[node.args[1]]
+    if isinstance(b.struct_info, relax.TupleStructInfo):
+       b = b[0]
     return bb.emit(relax.op.add(x, b))
 
-def map_other_op():
+def map_flatten(bb: relax.BlockBuilder, node_map, node):
+    x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
+    dims = node.args[1]
+    shape = np.array([int(i) for i in x.struct_info.shape])
+    new_shape = shape[:dims]
+    new_shape = np.append(new_shape, shape[dims:].prod())
+    
+    return bb.emit(relax.op.reshape(x, tuple(new_shape)))
+
+def map_other_op(bb: relax.BlockBuilder, node_map, node):
     pass
 
 # call_module
 def map_nn_relu(bb: relax.BlockBuilder, node_map, node, nn_module):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     return bb.emit(relax.op.nn.relu(x))
 
 def map_nn_linear(bb: relax.BlockBuilder, node_map, node, nn_module):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     w = map_params(nn_module.weight)
     bias = map_params(nn_module.bias)
     return bb.emit(relax.op.linear(x, w, bias))
 
 def map_nn_conv2d(bb: relax.BlockBuilder, node_map, node, nn_module):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     kernel = map_params(nn_module.weight)
     bias = None
     if nn_module.bias is not None:
@@ -68,13 +96,50 @@ def map_nn_conv2d(bb: relax.BlockBuilder, node_map, node, nn_module):
     padding = nn_module.padding
     dilation = nn_module.dilation
     conv_out = bb.emit(relax.op.nn.conv2d(x, kernel, strides, padding, dilation))
-    if not bias:
+    if bias:
         return bb.emit(relax.op.add(conv_out, bias))
     return conv_out
+
+def map_nn_BatchNorm2d(bb: relax.BlockBuilder, node_map, node, nn_module):
+    x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
+    affine = nn_module.affine
+    eps = nn_module.eps
+    # train stage
+    # momentum = nn_module.momentum
+    # moving_mean = relax.Var(node.target+'_moving_mean', R.Tensor(nn_module.running_mean.shape, 'float32'))
+    # moving_var = relax.Var(node.target+'_moving_var', R.Tensor(nn_module.running_var.shape, 'float32'))
+    moving_mean = map_params(nn_module.running_mean)
+    moving_var = map_params(nn_module.running_var)
+    
+    if affine:
+        gamme = map_params(nn_module.weight)
+        beta = map_params(nn_module.bias)
+    bn = relax.op.nn.batch_norm(x, gamme, beta, moving_mean, moving_var, epsilon=eps, axis=1)
+    return bb.emit(bn)
+
+def map_nn_maxpool(bb: relax.BlockBuilder, node_map, node, nn_module):
+    x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
+    pool_size = nn_module.kernel_size
+    strides = nn_module.stride
+    padding = nn_module.padding
+    return bb.emit(relax.op.nn.max_pool2d(x, pool_size, strides, padding))
+
+def map_nn_avgpool(bb: relax.BlockBuilder, node_map, node, nn_module):
+    x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
+    output_size = nn_module.output_size
+    return bb.emit(relax.op.nn.adaptive_avg_pool2d(x, output_size))
 
 # call_method
 def map_view(bb: relax.BlockBuilder, node_map, node):
     x = node_map[node.args[0]]
+    if isinstance(x.struct_info, relax.TupleStructInfo):
+        x = x[0]
     shape = node.args[1]
     return bb.emit(relax.op.reshape(x, shape))
 
@@ -82,12 +147,17 @@ call_map_function = {
     torch.matmul: map_matmul,
     torch.add: map_add,
     torch.relu: map_relu,
+    torch.flatten: map_flatten,
+    # torch.Tensor.__add__: map_add
 }
 
 call_map_module = {
     torch.nn.Linear: map_nn_linear,
     torch.nn.ReLU: map_nn_relu,
     torch.nn.Conv2d: map_nn_conv2d,
+    torch.nn.BatchNorm2d: map_nn_BatchNorm2d,
+    torch.nn.MaxPool2d: map_nn_maxpool,
+    torch.nn.AdaptiveAvgPool2d: map_nn_avgpool,
 }
 
 call_map_method = {
@@ -101,43 +171,45 @@ def from_fx(fx_module: Union[torch.fx.GrapgModule, nn.Module], input_shapes,
     '''
         torch.fx.graph ---> high level relax function 
     '''
-    input_index = 0
-    fn_inputs = []
-    fn_output = None
-
-    node_map = {}
-
     if isinstance(fx_module, nn.Module):
         fx_module = fx.symbolic_trace(fx_module)
+    input_index = 0
+    node_map = {}
     named_modules = dict(fx_module.named_modules())
 
     bb = relax.BlockBuilder()
-
+    fn_inputs = []
+    fn_output = None
     with bb.function('main'):
         with bb.dataflow():
             for node in fx_module.graph.nodes:
-                if node.op == "placeholder":
-                    shape = input_shapes[input_index]
-                    input_index += 1
-                    fn_input = relax.Var(node.target, R.Tensor(shape, 'float32'))
-                    node_map[node] = fn_input
+                if node.op == 'placeholder':
+                    input_shape = input_shapes[input_index]
+                    input_index = input_index + 1
+                    fn_input = relax.Var(node.target, R.Tensor(input_shape, 'float32'))
                     fn_inputs.append(fn_input)
-                elif node.op == "get_attr":
+                    node_map[node] = fn_input
+                elif node.op == 'get_attr':
                     node_map[node] = map_params(fetch_attr(fx_module, node.target))
-                elif node.op == "call_function":
-                    node_map[node] = call_map_function[node.target](bb, node_map, node)
-                elif node.op == "call_module":
-                    nn_module = named_modules[node.target]
-                    node_map[node] = call_map_module[type(nn_module)](bb, node_map, node, nn_module)
-                elif node.op == "call_method":
+                elif node.op == 'call_function':
+                    if node.target in call_map_function.keys():
+                        node_map[node] = call_map_function[node.target](bb, node_map, node)
+                    else:  # 内置 "+" 运算符定义错误
+                        node_map[node] = call_map_function[torch.add](bb, node_map, node)
+                # --------------------- add call_method ------------------------#
+                elif node.op == 'call_method':
                     node_map[node] = call_map_method[node.target](bb, node_map, node)
-                elif node.op == "output":
+                # --------------------------------------------------------------#
+                elif node.op == 'call_module':
+                    nn_module = named_modules[node.target]
+                    # node_map[node] = call_map_module[nn_module](bb, node_map, node, nn_module)
+                    node_map[node] = call_map_module[type(nn_module)](bb, node_map, node, nn_module)
+                elif node.op == 'output':
                     output = node_map[node.args[0]]
                     if fn_output is not None:
-                        raise RuntimeError("fn_output should be None!")
+                        raise Warning("error")
                     fn_output = bb.emit_output(output)
         bb.emit_func_output(fn_output, fn_inputs)
-    
     return bb.get()
 # ------------------------------------------------------------- #
 
@@ -168,8 +240,7 @@ def create_fuse_dense_add(call: relax.Call, value: relax.Call, func=None, fn_nam
             else:
                 lv0 = bb.emit(relax.op.matmul(params_x, params_w))
             
-            gv = bb.emit(relax.op.add(lv0, params_b))
-            bb.emit_output(gv)
+            gv = bb.emit_output(bb.emit(relax.op.add(lv0, params_b)))
         bb.emit_func_output(gv)
     
     fused_fn = bb.get()[fn_name].with_attr('Primitive', 1)
@@ -232,15 +303,13 @@ class FuseDenseAddPass:
 def map_add_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
     x, b = call.args
     return bb.call_te(topi.add, x, b)
-
+    
 def map_matmul_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
     x, w = call.args
-    if isinstance(w, relax.expr.DataflowVar):
-        value = func(call.args[1])
-        if value.op == tvm.ir.Op.get('relax.permute_dims'):
-            w = value.args[0]
-            return bb.call_te(topi.nn.dense, x, w)
-    return bb.call_te(topi.matmul, x, w)
+    if isinstance(w, relax.expr.DataflowVar) and (func(w).op == tvm.ir.Op.get('relax.permute_dims')):
+        w = func(w).args[0]
+        return bb.call_te(topi.nn.dense, x, w)
+    return bb.call_te(topi.nn.matmul, x, w)
 
 def map_relu_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
     x = call.args[0]
@@ -255,13 +324,32 @@ def map_reshape_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
     x, shape = call.args
     return bb.call_te(topi.reshape, x, shape)
 
+def map_BatchNorm2d_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
+    x, gamma, beta, moving_mean, moving_var = call.args[:5]
+    attrs = call.attrs
+    return bb.call_te(topi.nn.batch_norm, x, gamma, beta, moving_mean, moving_var, attrs.axis, attrs.epsilon, attrs.center, attrs.scale)
+
+def map_maxpool2d_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
+    x = call.args[0]
+    attrs = call.attrs
+    return bb.call_te(topi.nn.pool2d, x, attrs.pool_size, attrs.strides, attrs.dilation, attrs.padding, 'max', attrs.ceil_mode, attrs.layout)
+
+def map_adaptiveAvgPool2d_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
+    x = call.args[0]
+    attrs = call.attrs
+    return bb.call_te(topi.nn.adaptive_pool, x, attrs.output_size, 'avg', attrs.layout)
+
 op_map = {
     'relax.matmul': map_matmul_te,
     'relax.add': map_add_te,
     'relax.nn.relu': map_relu_te,
     'relax.nn.conv2d': map_conv_te,
-    'relax.reshape': map_reshape_te
+    'relax.reshape': map_reshape_te,
+    'relax.nn.batch_norm': map_BatchNorm2d_te,
+    'relax.nn.max_pool2d': map_maxpool2d_te,
+    'relax.nn.adaptive_avg_pool2d': map_adaptiveAvgPool2d_te,
 }
+
 
 @relax.expr_functor.mutator
 class LowerToTensorIR(relax.PyExprMutator):
@@ -274,7 +362,7 @@ class LowerToTensorIR(relax.PyExprMutator):
     
     def visit_call_(self, call: relax.Call):
         call = self.visit_expr_post_order(call)
-
+            
         if call.op in self.op_map:
             return self.op_map[call.op](self.builder_, call, self.lookup_binding)
         return call
@@ -300,14 +388,15 @@ class LowerToTensorIRPass:
 
 # ---------------------- 算子优化 ---------------------------------------#
 # 只支持一个main的IRModule优化
-def mlc_tune_tir(Model: IRModule, target, 
+def mlc_tune_tir(Model: IRModule, target='cuda --max_threads_per_block=1024 --max_shared_memory_per_block=49152', 
                 work_dir="./tune_tmp/",
                 task_name='main',
                 max_trials_global=64,
                 num_trials_per_iter=64,
-                compile_tir_target='llvm'):
+                compile_tir_target='cuda'):
     fn_names = [x.name_hint for x in Model.functions]
     fn_names.remove('main')
+    print(len(fn_names))
     for fn_name in fn_names:
         print(fn_name)
         mod_ = tvm.IRModule.from_expr(Model[fn_name].with_attr("global_symbol", 'main'))
@@ -317,7 +406,6 @@ def mlc_tune_tir(Model: IRModule, target,
                             task_name=task_name,
                             max_trials_global=max_trials_global,
                             num_trials_per_iter=num_trials_per_iter)
-        
         tuned_sch = ms.tir_integration.compile_tir(tuned_record, mod_, target=compile_tir_target)
         new_func = tuned_sch.mod['main'].with_attr("global_symbol", fn_name)
         gv = Model.get_global_var(fn_name)
