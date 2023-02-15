@@ -13,8 +13,8 @@ import torch
 import sys
 import builtins
 mlc = sys.modules[__name__]
-# tvm.ir.container.Array().
-# ---------------------- te ---------------------------------------#
+
+# ---------------------- custom te ---------------------------------------#
 def mean_te(x, axis):
     shape = x.shape
     reduce_axis = []
