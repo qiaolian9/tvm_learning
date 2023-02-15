@@ -32,6 +32,8 @@ mlc: <https://mlc.ai/zh/>
 ```python
 import mlc
 import tvm
+import relax
+# Detail in ./MLC/mlc/mlc.py & ./MLC/demo/demo2.ipynb
 resnet = resnet18() # nn.Module
 
 resnet_fx_module = mlc.from_fx(resnet, [(1, 1, 384, 384)]) # relax.function
@@ -45,8 +47,6 @@ tunedResnet = mlc.mlc_tune_tir(DemoModelFinal, "cuda --max_threads_per_block=102
 
 ex = relax.vm.build(tunedResnet, target='cuda')
 vm = relax.VirtualMachine(ex, tvm.cuda(0))   #relax virtualmachine
-
-# Detail in ./MLC/mlc/mlc.py & ./MLC/demo/demo2.ipynb
 ```
 
 

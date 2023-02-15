@@ -1,2 +1,2 @@
 # source from d2l-tvm
-## using tvm.te
+## Focus on tvm.te(tensor expression)

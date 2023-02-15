@@ -13,9 +13,33 @@ import torch
 import sys
 import builtins
 mlc = sys.modules[__name__]
-
+# tvm.ir.container.Array().
 # ---------------------- te ---------------------------------------#
+def mean_te(x, axis):
+    shape = x.shape
+    reduce_axis = []
+    mean_ = 1
+    for i in axis:
+        reduce_axis.append(te.reduce_axis((0, shape[int(i)])))
+        mean_ *= shape[int(i)]
+    mean_ = te.const(int(mean_))
+    sum_ = te.compute((int(shape[1]),), lambda i: te.sum(x[reduce_axis[0],i,reduce_axis[1],reduce_axis[2]], axis=reduce_axis), name='sum_out')
+    out = te.compute(sum_.shape, lambda *i: sum_(*i) / mean_, name='mean_out')
+    return out
 
+def var_te(x, axis):
+    shape = x.shape
+    reduce_axis = []
+    n_ = 1
+    for i in axis:
+        reduce_axis.append(te.reduce_axis((0, shape[int(i)])))
+        n_ *= shape[int(i)]
+    n_ = te.const(int(n_))
+    mean_ = mean_te(x, axis)
+    sub_ = te.compute(x.shape, lambda n, c, h, w: te.power(x[n, c, h, w] - mean_[c], 2), name='sub_out')
+    sum_ = te.compute(mean_.shape, lambda i: te.sum(sub_[reduce_axis[0],i,reduce_axis[1],reduce_axis[2]], axis=reduce_axis), name='sum_out')
+    var_out = te.compute(sum_.shape, lambda i: sum_[i] / n_, name='var_out')
+    return var_out
 
 # ---------------------- 构造映射函数 ---------------------------------------#
 # torch graph/nn.Module --> IR high level relax.function
@@ -106,12 +130,22 @@ def map_nn_BatchNorm2d(bb: relax.BlockBuilder, node_map, node, nn_module):
         x = x[0]
     affine = nn_module.affine
     eps = nn_module.eps
-    # train stage
+
+    # moving_mean = moving_mean * momentum + data_mean * (1 - momentum)
+    # moving_var = moving_var * momentum + data_var * (1 - momentum)
+    data_mean = bb.emit(relax.op.mean(x, [0, 2, 3]))
+    data_var = bb.emit(relax.op.variance(x, [0, 2,3]))
+
+    # if node not in node_map.keys(): 
+    #     moving_mean_start = map_params(nn_module.running_mean)
+    #     moving_var_start = map_params(nn_module.running_var)
+    #     moving_mean = relax.Var(node.target+'_moving_mean', R.Tensor(nn_module.running_mean.shape, 'float32'))
+    #     moving_var = relax.Var(node.target+'_moving_var', R.Tensor(nn_module.running_var.shape, 'float32'))
+
     # momentum = nn_module.momentum
-    # moving_mean = relax.Var(node.target+'_moving_mean', R.Tensor(nn_module.running_mean.shape, 'float32'))
-    # moving_var = relax.Var(node.target+'_moving_var', R.Tensor(nn_module.running_var.shape, 'float32'))
-    moving_mean = map_params(nn_module.running_mean)
-    moving_var = map_params(nn_module.running_var)
+    moving_mean = data_mean
+    moving_var = data_var
+    
     
     if affine:
         gamme = map_params(nn_module.weight)
@@ -206,6 +240,8 @@ def from_fx(fx_module: Union[torch.fx.GrapgModule, nn.Module], input_shapes,
                     node_map[node] = call_map_module[type(nn_module)](bb, node_map, node, nn_module)
                 elif node.op == 'output':
                     output = node_map[node.args[0]]
+                    if isinstance(output.struct_info, relax.TupleStructInfo):
+                        output = output[0]
                     if fn_output is not None:
                         raise Warning("error")
                     fn_output = bb.emit_output(output)
@@ -300,6 +336,16 @@ class FuseDenseAddPass:
 
 # ---------------------- 映射至TensorIR Call ---------------------------------------#
 # high level relax function ---> Tensor IR function
+def map_mean_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
+    attrs = call.attrs
+    x = call.args[0]
+    return bb.call_te(mean_te, x, attrs.axis)
+    
+def map_var_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
+    attrs = call.attrs
+    x = call.args[0]
+    return bb.call_te(var_te, x, attrs.axis)
+
 def map_add_te(bb: relax.BlockBuilder, call: relax.Call, func=None):
     x, b = call.args
     return bb.call_te(topi.add, x, b)
@@ -340,6 +386,8 @@ def map_adaptiveAvgPool2d_te(bb: relax.BlockBuilder, call: relax.Call, func=None
     return bb.call_te(topi.nn.adaptive_pool, x, attrs.output_size, 'avg', attrs.layout)
 
 op_map = {
+    'relax.variance': map_var_te,
+    'relax.mean': map_mean_te,
     'relax.matmul': map_matmul_te,
     'relax.add': map_add_te,
     'relax.nn.relu': map_relu_te,
