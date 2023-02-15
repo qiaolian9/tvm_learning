@@ -26,6 +26,6 @@ vm = relax.VirtualMachine(ex, tvm.cuda(0))   #relax virtualmachine
 
 **Including op**：Conv2d/BN/Pool/Linear/Add/Matmmul/Relu/Reshape/View etc.(./MLC/mlc/mlc.py)
 
-**speed up**: torch_cda_version: 4.358024 ms --> tvm_cuda_version: 3.653016 ms
+**speed up**: torch_cda_version: 3.868004 ms --> tvm_cuda_version: 2.876463 ms
 
 **To do**: 1.batchNorm momentum map_te needs to be done & 2. "+" -> call_function
