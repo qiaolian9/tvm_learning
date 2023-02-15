@@ -28,8 +28,6 @@ d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm> \
 mlc: <https://mlc.ai/zh/>
 
 ## MLC
-detail in ./MLC/README.md
-
 **Process**: torch.nn.Module ---> relax.function ---> FusedOp ---> low level TensorIR ---> tuned mod ---> ex 
 ```python
 import mlc
@@ -47,6 +45,8 @@ tunedResnet = mlc.mlc_tune_tir(DemoModelFinal, "cuda --max_threads_per_block=102
 
 ex = relax.vm.build(tunedResnet, target='cuda')
 vm = relax.VirtualMachine(ex, tvm.cuda(0))   #relax virtualmachine
+
+# Detail in ./MLC/mlc/mlc.py & ./MLC/demo/demo2.ipynb
 ```
 
 
