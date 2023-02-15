@@ -394,11 +394,12 @@ def mlc_tune_tir(Model: IRModule, target='cuda --max_threads_per_block=1024 --ma
                 max_trials_global=64,
                 num_trials_per_iter=64,
                 compile_tir_target='cuda'):
+    print("target: %s; compile_tie_target: %s" % (target, compile_tir_target))
     fn_names = [x.name_hint for x in Model.functions]
     fn_names.remove('main')
     print(len(fn_names))
-    for fn_name in fn_names:
-        print(fn_name)
+    for i, fn_name in enumerate(fn_names):
+        print("op-%d : %s" %(i, fn_name))
         mod_ = tvm.IRModule.from_expr(Model[fn_name].with_attr("global_symbol", 'main'))
 
         tuned_record = ms.tune_tir(mod_, target=target,

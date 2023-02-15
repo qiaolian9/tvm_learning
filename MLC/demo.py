@@ -6,7 +6,6 @@ import demo.model.resnet as Resnet
 from tvm import relax
 import tvm
 
-# resnet = Resnet.resnet9()
 class Demo(nn.Module):
     def __init__(self):
         super().__init__()
