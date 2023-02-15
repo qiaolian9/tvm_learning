@@ -131,27 +131,22 @@ def map_nn_BatchNorm2d(bb: relax.BlockBuilder, node_map, node, nn_module):
     affine = nn_module.affine
     eps = nn_module.eps
 
+    # train stage
     # moving_mean = moving_mean * momentum + data_mean * (1 - momentum)
     # moving_var = moving_var * momentum + data_var * (1 - momentum)
-    data_mean = bb.emit(relax.op.mean(x, [0, 2, 3]))
-    data_var = bb.emit(relax.op.variance(x, [0, 2,3]))
-
-    # if node not in node_map.keys(): 
-    #     moving_mean_start = map_params(nn_module.running_mean)
-    #     moving_var_start = map_params(nn_module.running_var)
-    #     moving_mean = relax.Var(node.target+'_moving_mean', R.Tensor(nn_module.running_mean.shape, 'float32'))
-    #     moving_var = relax.Var(node.target+'_moving_var', R.Tensor(nn_module.running_var.shape, 'float32'))
-
-    # momentum = nn_module.momentum
-    moving_mean = data_mean
-    moving_var = data_var
+    # momentum = relax.const(nn_module.momentum)
+    # data_mean = bb.emit(relax.op.mean(x, [0, 2, 3]))
+    # data_var = bb.emit(relax.op.variance(x, [0, 2,3]))
     
-    
+    # inference stage
+    moving_mean = map_params(nn_module.running_mean)
+    moving_var = map_params(nn_module.running_var)
+
     if affine:
         gamme = map_params(nn_module.weight)
         beta = map_params(nn_module.bias)
-    bn = relax.op.nn.batch_norm(x, gamme, beta, moving_mean, moving_var, epsilon=eps, axis=1)
-    return bb.emit(bn)
+
+    return bb.emit(relax.op.nn.batch_norm(x, gamme, beta, moving_mean, moving_var, epsilon=eps, axis=1))
 
 def map_nn_maxpool(bb: relax.BlockBuilder, node_map, node, nn_module):
     x = node_map[node.args[0]]
@@ -209,6 +204,7 @@ def from_fx(fx_module: Union[torch.fx.GrapgModule, nn.Module], input_shapes,
         fx_module = fx.symbolic_trace(fx_module)
     input_index = 0
     node_map = {}
+    node_bn_map = {}
     named_modules = dict(fx_module.named_modules())
 
     bb = relax.BlockBuilder()

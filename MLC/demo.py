@@ -11,20 +11,20 @@ import tvm
 #         super().__init__()
 #         self.w = nn.Parameter(torch.rand((900, 128)))
 #         self.b = nn.Parameter(torch.rand((128,)))
-#         self.bn = nn.BatchNorm2d(1, momentum=0)
+#         self.bn = nn.BatchNorm2d(1, momentum=0.5)
 #         self.conv2d = nn.Conv2d(1, 1, 3, 1)
 #         self.relu = nn.ReLU()
 #         self.linear = nn.Linear(128, 10)
     
 #     def forward(self, x):
-#         x = self.conv2d(x)
+#         # x = self.conv2d(x)
 #         x = self.bn(x)
-#         x = torch.relu(x)
-#         x = x.view([1, -1])
-#         x = torch.matmul(x, self.w)
-#         x = torch.add(x, self.b)
-#         x = self.relu(x)
-#         x = self.linear(x)
+#         # x = torch.relu(x)
+#         # x = x.view([1, -1])
+#         # x = torch.matmul(x, self.w)
+#         # x = torch.add(x, self.b)
+#         # x = self.relu(x)
+#         # x = self.linear(x)
 #         return x
 # resnet = Demo()
 resnet = Resnet.resnet18()
@@ -58,7 +58,9 @@ ex = relax.vm.build(DemoModelFinal, 'llvm')
 vm = relax.VirtualMachine(ex, tvm.cpu(0))
 
 res_nd = vm['main'](x_nd)
-res_torch = resnet(x_torch)
+resnet.eval()
+with torch.no_grad():
+    res_torch = resnet(x_torch)
 
 np.testing.assert_allclose(res_nd.numpy(), res_torch.detach().numpy(), rtol=1e-5)
 
