@@ -1,4 +1,7 @@
 # MLC learning
+## source
+d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm> \
+mlc: <https://mlc.ai/zh/>
 ```
 .
 ├── d2ltvm_tutorial
@@ -23,9 +26,6 @@
 │   └── README.md
 └── README.md
 ```
-## source
-d2ltvm_tutorial: <https://github.com/d2l-ai/d2l-tvm> \
-mlc: <https://mlc.ai/zh/>
 
 ## MLC
 **Process**: torch.nn.Module ---> relax.function ---> FusedOp ---> low level TensorIR ---> tuned mod ---> ex 
